@@ -1,0 +1,351 @@
+from pyautocad import Autocad, APoint
+import array
+import time
+from shapely.geometry import Polygon, Point
+
+
+# 得到分幅范围信息
+def getExtents(dwgPath):
+    acad = Autocad(create_if_not_exists=True)
+    time.sleep(1)
+    doc = acad.app.Documents.open(dwgPath)
+
+    # 得到分幅范围和图幅名
+    extents = []
+    text_points = []
+    time.sleep(3)
+    for object in acad.iter_objects():
+        print(object.ObjectName)
+        if object.ObjectName == 'AcDb2dPolyline':
+            extents.append(object.Coordinates)
+        if object.ObjectName == 'AcDbText':
+            text_points.append(object)
+
+    # 把分幅范围和图幅名做对应
+    points = []
+    for extent in extents:
+        polygon = Polygon([
+            (extent[0], extent[1]), (extent[3], extent[4]), (extent[6], extent[7]), (extent[9], extent[10])])
+        for text_point in text_points:
+            point = Point(text_point.InsertionPoint[0], text_point.InsertionPoint[1])
+            if polygon.contains(point):
+                points.append(text_point)
+                continue
+
+    return extents, points
+
+
+# 截取分幅框内图形，并套入图框，然后存出图幅
+def execute(acad, count, rawDwgPath, resultDwgName, extent):
+    time.sleep(1)
+    doc = acad.app.Documents.open(rawDwgPath)
+
+    extent_list = list(extent)
+
+    # 把图幅范围按Polyline形式插入到文档中
+    polyLine = doc.ModelSpace.AddPolyline(array.array("d", extent_list))
+
+    # 根据图幅范围进行剪切操作
+    selectCmd = "SELECT ALL R BOX " + \
+                str(extent_list[0]) + "," + str(extent_list[1]) + "," + str(extent_list[2]) \
+                + " " \
+                + str(extent_list[6]) + "," + str(extent_list[7]) + "," + str(extent_list[8]) \
+                + "  "
+    doc.SendCommand("SELECT L  ")
+    doc.SendCommand("EXTRIM 1 ")
+    doc.SendCommand(selectCmd)
+    doc.SendCommand("DELETE ")
+
+    # 把准备好的图框模板插入到文档中
+    point = APoint(1200.0, 200.0)
+    doc.Import(r"F:\Python\zdyff\自定义分幅源数据\model" + "\\" + str(count) + ".dxf", point, 1.0)
+
+    # 另存为相应文档
+    doc.SaveAs(resultDwgName + str(count) + ".dwg")
+    doc.Close(True)
+
+
+# 处理图框模板（1.填充信息 2.移动位置到相应分幅范围）
+def saveModel(acad, modelPath, extent, modelSaveAsDirPath, count, points, code):
+    name = points[count].TextString  # 得到图幅号
+
+    # 获取相应分幅名插入点的周围点（为填写接图表做准备）
+    eastPoint, northEastPoint, northPoint, northWestPoint, southEastPoint, southPoint, southWestPoint, westPoint = getNeighborPoints(
+        count, extent, points)
+
+    time.sleep(2)
+    doc = acad.app.Documents.open(modelPath)
+    time.sleep(2)
+
+    # 填充图幅信息
+    fillMapInfo(acad, code, eastPoint, extent, name, northEastPoint, northPoint, northWestPoint, southEastPoint,
+                southPoint, southWestPoint, westPoint)
+
+    time.sleep(2)
+
+    # 移动模板图幅到相应位置，并另存为一份模板
+    moveModelMap(acad, count, doc, extent, modelSaveAsDirPath)
+
+
+# 移动模板图幅到相应位置
+def moveModelMap(acad, count, doc, extent, modelSaveAsDirPath):
+    x = 0.0
+    y = 0.0
+    for obj in acad.iter_objects("Polyline"):
+        if obj.Closed:
+            print(obj.Coordinates)
+            x = (obj.Coordinates[0] + obj.Coordinates[3 * 4]) / 2
+            y = (obj.Coordinates[1] + obj.Coordinates[3 * 4 + 1]) / 2
+    extent_list = list(extent)
+    xe = (extent_list[0] + extent_list[6]) / 2
+    ye = (extent_list[1] + extent_list[7]) / 2
+    doc.SendCommand("SELECT ALL  ")
+    p1 = str(x) + "," + str(y)
+    p2 = str(xe) + "," + str(ye)
+    doc.SendCommand("M " + p1 + " " + p2 + "  ")
+    doc.SaveAs(modelSaveAsDirPath + "\\" + str(count), 61)
+    doc.Close(True)
+
+
+# 填充图幅信息
+def fillMapInfo(acad, code, eastPoint, extent, name, northEastPoint, northPoint, northWestPoint, southEastPoint,
+                southPoint, southWestPoint, westPoint):
+    # 修改接图表
+    deleteObjs = []  # 设置一个删除队列，如果在iter_objects里删除，会报错
+    for obj in acad.iter_objects(["Text", "MText"]):
+        print(obj.TextString)
+        if obj.TextString == "x#地形图":
+            obj.TextString = name + "#地形图"
+        elif obj.TextString == "东":
+            if eastPoint is not None:
+                obj.TextString = eastPoint.TextString
+            else:
+                deleteObjs.append(obj)
+        elif obj.TextString == "南":
+            if southPoint is not None:
+                obj.TextString = southPoint.TextString
+            else:
+                deleteObjs.append(obj)
+        elif obj.TextString == "西":
+            if westPoint is not None:
+                obj.TextString = westPoint.TextString
+            else:
+                deleteObjs.append(obj)
+        elif obj.TextString == "北":
+            if northPoint is not None:
+                obj.TextString = northPoint.TextString
+            else:
+                deleteObjs.append(obj)
+        elif obj.TextString == "东南":
+            if southEastPoint is not None:
+                obj.TextString = southEastPoint.TextString
+            else:
+                deleteObjs.append(obj)
+        elif obj.TextString == "东北":
+            if northEastPoint is not None:
+                obj.TextString = northEastPoint.TextString
+            else:
+                deleteObjs.append(obj)
+        elif obj.TextString == "西南":
+            if southWestPoint is not None:
+                obj.TextString = southWestPoint.TextString
+            else:
+                deleteObjs.append(obj)
+        elif obj.TextString == "西北":
+            if northWestPoint is not None:
+                obj.TextString = northWestPoint.TextString
+            else:
+                deleteObjs.append(obj)
+
+        elif obj.TextString == "xnx":
+            obj.TextString = (str(code) + str(extent[0] / 1000))[:3]
+        elif obj.TextString == "XNX":
+            obj.TextString = (str(code) + str(extent[0] / 1000))[3:7]
+        elif obj.TextString == "xny":
+            obj.TextString = str(extent[1] / 1000)[:2]
+        elif obj.TextString == "XNY":
+            obj.TextString = str(extent[1] / 1000)[2:6]
+
+        elif obj.TextString == "dnx":
+            obj.TextString = (str(code) + str(extent[3] / 1000))[:3]
+        elif obj.TextString == "DNX":
+            obj.TextString = (str(code) + str(extent[3] / 1000))[3:7]
+        elif obj.TextString == "dny":
+            obj.TextString = str(extent[4] / 1000)[:2]
+        elif obj.TextString == "DNY":
+            obj.TextString = str(extent[4] / 1000)[2:6]
+
+        elif obj.TextString == "dbx":
+            obj.TextString = (str(code) + str(extent[6] / 1000))[:3]
+        elif obj.TextString == "DBX":
+            obj.TextString = (str(code) + str(extent[6] / 1000))[3:7]
+        elif obj.TextString == "dby":
+            obj.TextString = str(extent[7] / 1000)[:2]
+        elif obj.TextString == "DBY":
+            obj.TextString = str(extent[7] / 1000)[2:6]
+
+        elif obj.TextString == "xbx":
+            obj.TextString = (str(code) + str(extent[9] / 1000))[:3]
+        elif obj.TextString == "XBX":
+            obj.TextString = (str(code) + str(extent[9] / 1000))[3:7]
+        elif obj.TextString == "xby":
+            obj.TextString = str(extent[10] / 1000)[:2]
+        elif obj.TextString == "XBY":
+            obj.TextString = str(extent[10] / 1000)[2:6]
+
+        else:
+            print(obj)
+    for obj in deleteObjs:
+        obj.Delete()
+
+
+# 为了填充接图表，获取一个点周围八个方向的点
+def getNeighborPoints(count, extent, points):
+    northPoint = getNorthPoint(points[count], points, abs(extent[0] - extent[3]) / 2)
+    southPoint = getSouthPoint(points[count], points, abs(extent[0] - extent[3]) / 2)
+    eastPoint = getEastPoint(points[count], points, abs(extent[1] - extent[7]) / 2)
+    westPoint = getWestPoint(points[count], points, abs(extent[1] - extent[7]) / 2)
+    northEastPoint = None
+    if northPoint is not None:
+        northEastPoint = getEastPoint(northPoint, points, abs(extent[1] - extent[7]) / 2)
+    else:
+        if eastPoint is not None:
+            northEastPoint = getNorthPoint(eastPoint, points, abs(extent[0] - extent[3]) / 2)
+        else:
+            northEastPoint = None
+    northWestPoint = None
+    if northPoint is not None:
+        northWestPoint = getWestPoint(northPoint, points, abs(extent[1] - extent[7]) / 2)
+    else:
+        if westPoint is not None:
+            northWestPoint = getNorthPoint(westPoint, points, abs(extent[0] - extent[3]) / 2)
+        else:
+            northWestPoint = None
+    southEastPoint = None
+    if southPoint is not None:
+        southEastPoint = getEastPoint(southPoint, points, abs(extent[1] - extent[7]) / 2)
+    else:
+        if eastPoint is not None:
+            southEastPoint = getSouthPoint(eastPoint, points, abs(extent[0] - extent[3]) / 2)
+        else:
+            southEastPoint = None
+    southWestPoint = None
+    if southPoint is not None:
+        southWestPoint = getWestPoint(southPoint, points, abs(extent[1] - extent[7]) / 2)
+    else:
+        if westPoint is not None:
+            southWestPoint = getSouthPoint(westPoint, points, abs(extent[0] - extent[3]) / 2)
+        else:
+            southWestPoint = None
+    return eastPoint, northEastPoint, northPoint, northWestPoint, southEastPoint, southPoint, southWestPoint, westPoint
+
+
+# 得到北边点
+def getNorthPoint(point, points, halfDistanceX):
+    northPoints = []
+    for p in points:
+        if abs(p.InsertionPoint[0] - point.InsertionPoint[0]) < halfDistanceX and p.InsertionPoint[1] > \
+                point.InsertionPoint[1]:
+            northPoints.append(p)
+
+    if len(northPoints) == 0:
+        return None
+
+    if len(northPoints) == 1:
+        return northPoints[0]
+
+    y = northPoints[0].InsertionPoint[1]
+    northPoint = northPoints[0]
+    for northpoint in northPoints:
+        if northpoint.InsertionPoint[1] < y:
+            northPoint = northpoint
+
+    return northPoint
+
+
+# 得到南边点
+def getSouthPoint(point, points, halfDistanceX):
+    southPoints = []
+    for p in points:
+        if abs(p.InsertionPoint[0] - point.InsertionPoint[0]) < halfDistanceX and p.InsertionPoint[1] < \
+                point.InsertionPoint[1]:
+            southPoints.append(p)
+
+    if len(southPoints) == 0:
+        return None
+
+    if len(southPoints) == 1:
+        return southPoints[0]
+
+    y = southPoints[0].InsertionPoint[1]
+    southPoint = southPoints[0]
+    for southpoint in southPoints:
+        if southpoint.InsertionPoint[1] > y:
+            southPoint = southpoint
+
+    return southPoint
+
+
+# 得到东边点
+def getEastPoint(point, points, halfDistanceY):
+    eastPoints = []
+    for p in points:
+        if abs(p.InsertionPoint[1] - point.InsertionPoint[1]) < halfDistanceY and p.InsertionPoint[0] > \
+                point.InsertionPoint[0]:
+            eastPoints.append(p)
+
+    if len(eastPoints) == 0:
+        return None
+
+    if len(eastPoints) == 1:
+        return eastPoints[0]
+
+    x = eastPoints[0].InsertionPoint[0]
+    eastPoint = eastPoints[0]
+    for eastpoint in eastPoints:
+        if eastpoint.InsertionPoint[0] < x:
+            eastPoint = eastpoint
+
+    return eastPoint
+
+
+# 得到西边点
+def getWestPoint(point, points, halfDistanceY):
+    westPoints = []
+    for p in points:
+        if abs(p.InsertionPoint[1] - point.InsertionPoint[1]) < halfDistanceY and p.InsertionPoint[0] < \
+                point.InsertionPoint[0]:
+            westPoints.append(p)
+
+    if len(westPoints) == 0:
+        return None
+
+    if len(westPoints) == 1:
+        return westPoints[0]
+
+    x = westPoints[0].InsertionPoint[0]
+    westPoint = westPoints[0]
+    for westpoint in westPoints:
+        if westpoint.InsertionPoint[0] > x:
+            westPoint = westpoint
+
+    return westPoint
+
+
+if __name__ == '__main__':
+    extents, points = getExtents(r"F:\Python\zdyff\自定义分幅源数据\2自定义分幅范围.dwg")
+
+    code = input("请输入分幅带号：")
+    count = 0
+    for extent in extents:
+        print(extent)
+        acad = Autocad(create_if_not_exists=True)
+
+        saveModel(acad, r"F:\Python\zdyff\自定义分幅源数据\3图框.dwg", extent,
+                  r"F:\Python\zdyff\自定义分幅源数据\model", count, points, code)
+
+        execute(acad, count, r"F:\Python\zdyff\自定义分幅源数据\1待分幅数据.dwg",
+                r"F:\Python\zdyff\自定义分幅源数据\compete", extent)
+        count = count + 1
+
+    acad.app.Quit()
